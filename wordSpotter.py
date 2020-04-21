@@ -117,6 +117,7 @@ def folder_descriptors(folder):
     mapping = None
     for file in files:
         img1 = cv2.imread(file)
+        print(file)
         desc, temp_map = image_descriptors(file)
         if desc is not None:
             if res is not None:
@@ -329,6 +330,120 @@ def L2Normalize(v):
     v = np.array(v).copy()
     return np.nan_to_num(v/np.linalg.norm(v, axis=1, keepdims=True))
 
+
+def MAPScore(query_path, word_strings_dict, phoc_features, gmm, image_mapping_dict, show_img_flag = False, cca_obj=None):
+    '''
+    Getting the MAP score for the given image query
+    '''
+    if(show_img_flag):
+        img = plt.imread(query_path)
+        plt.imshow(img)
+        plt.show()
+    query_sift_features = image_descriptors(query_path)
+    if(query_sift_features is None):
+        raise Exception("hello")
+    temp = copy.deepcopy(gmm)
+    query_FV = fisher_vector(query_sift_features, *temp)
+    # print(query_FV)
+    query_FV = query_FV.reshape(1, -1)
+    phoc = svm_obj.predict(query_FV)
+    phoc = phoc*2 - 1
+    if(show_img_flag):
+        print("path: {0}".format(query_path))
+        print(np.unique(phoc, return_counts=True))
+    if(cca_obj is not None):
+        phoc = cca_obj.transform_a(L2Normalize(phoc))
+        phoc = L2Normalize(phoc)
+    phoc_values = np.array(list(phoc_features.values()))
+    phoc_keys = np.array(list(phoc_features.keys()))
+    similarity_score = cosine_similarity(phoc, phoc_values)
+    # print(similarity_score.shape)
+    max_index = np.argmax(similarity_score)
+    top_5_indices = similarity_score.flatten().argsort()[-5:][::-1]
+    img = cv2.imread(query_path,0)
+    bar = np.zeros((img.shape[0], 5), np.uint8)
+    shape = img.shape
+    if(show_img_flag):
+        print("top 5 indices {0}".format(top_5_indices))
+        for i in top_5_indices:
+            match_img_path = image_mapping_dict[phoc_keys[i]]
+            print("Matching image path: {0}".format(match_img_path))
+            print("match phoc values: {0}".format(np.unique(phoc_features[phoc_keys[i]], return_counts=True)))
+            img2 = cv2.imread(match_img_path,0)
+            plt.imshow(img2)
+            plt.show()
+            img = np.hstack((img, bar, cv2.resize(img2, (shape[1],shape[0]))))
+        cv2.imwrite(str(query_path).split("/")[-1] + '_output.png', img)
+    query_string = word_strings_dict[os.path.basename(query_path)]
+    word_vals = np.array([word_strings_dict[your_key]
+                          for your_key in phoc_features.keys()])
+    word_vals = word_vals.flatten()
+    y_true = np.array([[int(1) if s == query_string else int(0)
+                        for s in word_vals]])
+    similarity_score[similarity_score <=0] = 0
+    mape = label_ranking_average_precision_score(y_true, similarity_score)
+    print(mape)
+    return mape
+
+
+def QBS(query_string, word_strings_dict, phoc_features, gmm, image_mapping_dict, show_img_flag = False, cca_obj=None):
+    '''
+    Getting the MAP score for the given image query
+    '''
+
+    phoc = np.array(PHOC()(query_string)).reshape(1, -1)
+    if(cca_obj is not None):
+        phoc = cca_obj.transform_b(L2Normalize(phoc))
+        phoc = L2Normalize(phoc)
+    if(show_img_flag):
+        print(np.unique(phoc, return_counts=True))
+    phoc_values = np.array(list(phoc_features.values()))
+    phoc_keys = np.array(list(phoc_features.keys()))
+    similarity_score = cosine_similarity(phoc, phoc_values)
+    max_index = np.argmax(similarity_score)
+    top_5_indices = similarity_score.flatten().argsort()[-5:][::-1]
+    shape = None
+    if(show_img_flag):
+        print("top 5 indices {0}".format(top_5_indices))
+        for i in top_5_indices:
+            match_img_path = image_mapping_dict[phoc_keys[i]]
+            print("Matching image path: {0}".format(match_img_path))
+            print("match phoc values: {0}".format(np.unique(phoc_features[phoc_keys[i]], return_counts=True)))
+            img2 = cv2.imread(match_img_path,0)
+            plt.imshow(img2)
+            plt.show()
+            if(shape is None):
+                img = img2
+                bar = np.zeros((img.shape[0], 5), np.uint8)
+                shape = img.shape
+            else:
+                print(img.shape, bar.shape, cv2.resize(img2, img.T.shape).shape)
+                img = np.hstack((img, bar, cv2.resize(img2, (shape[1],shape[0]))))
+        cv2.imwrite(str(query_path).split("/")[-1] + '_output.png', img)
+    word_vals = np.array([word_strings_dict[your_key]
+                          for your_key in phoc_features.keys()])
+    word_vals = word_vals.flatten()
+    y_true = np.array([[int(1) if s == query_string else int(0)
+                        for s in word_vals]])
+    similarity_score[similarity_score <=0] = 0
+    mape = label_ranking_average_precision_score(y_true, similarity_score)
+    return mape
+
+def score(word_strings_dict, train_phoc, gmm, image_mapping_dict, folder):
+    try:
+        print("I'm running on CPU {0}".format(mp.current_process().name))
+    except:
+        print("I'm running on CPU {0}".format(os.getpid()))
+    image_paths = glob.glob(folder + "/*.png")
+    score_list = []
+    for img_path in image_paths:
+        # print("count: {0}".format(count))
+        score = MAPScore(img_path, word_strings_dict,
+                        train_phoc, gmm, image_mapping_dict, False)
+        score_list.append(score)
+    return np.array(score_list)
+
+
 class Params():
     def __init__(self, gmm_train_data_path, svm_train_data_path, xml_data_path, weights_data_path, model_data_dump_path):
         self.gmm_train_data_path = gmm_train_data_path
@@ -418,3 +533,132 @@ if __name__ == "__main__":
     train_phoc = calcTrainingPHOC(word_strings_dict)
     stop = timeit.default_timer()
     print('Time taken to get train PHOC encoding: ', stop - start)
+    print("Build smv/cca train dataset")
+    start = timeit.default_timer()
+    X, Y, _ = buildDataset(svm_FV_features, train_phoc)
+    cca_X, cca_Y, _ = buildDataset(cca_FV_features, train_phoc)
+    full_X, full_Y, img_names = buildDataset(full_data_FV_features, train_phoc)
+    print("svm train phoc encoding")
+    print(np.unique(Y, return_counts=True))
+    stop = timeit.default_timer()
+    print('Time taken to build train dataset: ', stop - start)
+
+    print("Training SVM")
+    start = timeit.default_timer()
+    if(load_gmm_flag):
+        with open(opts.model_data_dump_path + "svm_obj", 'rb') as handle:
+            svm_obj = pickle.load(handle)
+
+    if(svm_obj is None):
+        clf = SGDClassifier(alpha=0.0001, eta0=0.003, tol=1e-5,class_weight="balanced", n_jobs=-1)
+        svm_obj = OneVsRestClassifier(clf, n_jobs=-1)
+        svm_obj.fit(X, Y)
+        with open(opts.model_data_dump_path + "svm_obj", 'wb') as handle:
+            pickle.dump(svm_obj, handle,protocol=pickle.HIGHEST_PROTOCOL)
+
+    stop = timeit.default_timer()
+    print('Time taken to train SVM: ', stop - start)
+
+    cca_Y_pred = None
+    if(load_gmm_flag):
+        cca_Y_pred = np.load(opts.weights_data_path + "cca_Y_pred" + ".npy")
+
+    if(cca_Y_pred is None):
+        cca_Y_pred = svm_obj.predict(cca_X)
+        print("svm prediction for cca_X") 
+        print(np.unique(cca_Y_pred,return_counts=True))
+        cca_Y_pred = cca_Y_pred*2 - 1
+        np.save(opts.weights_data_path + "cca_Y_pred", cca_Y_pred)
+
+    full_Y_pred = None
+    if(load_gmm_flag):
+        full_Y_pred = np.load(opts.weights_data_path + "full_Y_pred" + ".npy")
+
+    if(full_Y_pred is None):
+        full_Y_pred = svm_obj.predict(full_X)
+        print("svm prediction for full data") 
+        print(np.unique(full_Y_pred,return_counts=True))
+        full_Y_pred = full_Y_pred*2 - 1
+        np.save(opts.weights_data_path + "full_Y_pred", full_Y_pred)
+
+    v = full_Y_pred
+    cca_obj = None
+    full_data_phoc = dict((key, value) for (key, value) in zip(img_names, v))
+
+    scores = []
+    while(True):
+        query_type = input(
+            "Press 1 for get test MAPScore with cca\nPress 2 for get test baselineMAPScore\nPress 3 for string\nPress 4 for single image\nPress 0 to exit\n")
+        if(int(query_type) == 0):
+            break
+        if(int(query_type) == 1):
+            start = timeit.default_timer()
+            score_list = []
+            test_data_path = input("Enter query images folder path: ")
+            folders = glob.glob(test_data_path + "*")
+            count = 0
+            for folder in folders:
+                image_paths = glob.glob(folder + "/*.png")
+                for img_path in image_paths:
+                    count += 1
+                    if(count%400 == 0):
+                        print("count: {0}".format(count))
+                        print("temp MAP Score: {0}".format(np.mean(score_list)))
+                    try:
+                    # print("count: {0}".format(count))
+                        score = MAPScore(img_path, word_strings_dict,
+                                        full_data_phoc, gmm, image_mapping_dict, False, cca_obj)
+                        if(math.isfinite(score)):
+                            score_list.append(score)
+                    except:
+                        print("seg fault path: {0}".format(img_path))
+            try:
+                score_list = np.array(score_list)
+                print("MAP Score: {0}".format(np.mean(score_list)))
+            except:
+                print(len(score_list))
+            stop = timeit.default_timer()
+            print('Time taken to get test MAP: ', stop - start)
+        elif(int(query_type) == 2):
+            start = timeit.default_timer()
+            score_list = []
+            test_data_path = input("Enter query images folder path: ")
+            folders = glob.glob(test_data_path + "*")
+            count = 0
+            for folder in folders:
+                image_paths = glob.glob(folder + "/*.png")
+                for img_path in image_paths:
+                    count += 1
+                    if(count%200 == 0):
+                        print("count: {0}".format(count))
+                        print("temp MAP Score: {0}".format(np.mean(score_list)))
+                    score = MAPbaseLineScore(img_path, word_strings_dict,
+                                    full_data_FV_features, gmm, image_mapping_dict, False)
+                    if(math.isfinite(score)):
+                        score_list.append(score)
+            try:
+                score_list = np.array(score_list)
+                print("MAP Score: {0}".format(np.mean(score_list)))
+            except:
+                print(len(score_list))
+            stop = timeit.default_timer()
+            print('Time taken to get test MAP: ', stop - start)
+        elif(int(query_type) == 3):
+            query_path = input("Enter query string: ")
+            score = QBS(query_path, word_strings_dict,
+                            full_data_phoc, gmm, image_mapping_dict, True, cca_obj)
+            scores.append(score)
+            print("MAP Score: {0}".format(score))
+        elif(int(query_type) == 4):
+            query_path = input("Enter query image path: ")
+            if(query_path == "break"):
+                break
+            try:
+                score = MAPScore(query_path, word_strings_dict,
+                                full_data_phoc, gmm, image_mapping_dict, True)
+                scores.append(score)
+            except:
+                print(query_path)
+            print("MAP Score: {0}".format(score))
+        else:
+            print("MAP Score: {0}".format(np.mean(score_list)))
